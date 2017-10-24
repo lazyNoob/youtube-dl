@@ -3,13 +3,19 @@ from __future__ import unicode_literals
 
 import re
 
+
 from .common import InfoExtractor
 from ..utils import (
     determine_ext,
     int_or_none,
     js_to_json,
 )
-
+#Executing node
+import subprocess
+#Only to suppress url "as string" warning
+from ..compat import (
+    compat_str,
+)
 
 class StreamangoIE(InfoExtractor):
     _VALID_URL = r'https?://(?:www\.)?streamango\.com/(?:f|embed)/(?P<id>[^/?#&]+)'
@@ -37,22 +43,50 @@ class StreamangoIE(InfoExtractor):
         'only_matching': True,
     }]
 
+    def _decrypt_url(self, webpage, encrypted_src):
+    
+        regex = r"(eval\(function\(p,a,c,k,e,r\).*)\n"
+        
+        matches = re.finditer(regex, webpage)
+        for m in matches:
+            newEval = m.group(0)
+        
+        #Preparing Useful string
+        start = r"var decrypt={d:function(){}};"
+        eval = re.sub(r'(window)', 'decrypt', newEval)
+        end = r";console.log('https:'+decrypt."+encrypted_src+");"
+        
+        data = start+eval+end
+        p = subprocess.Popen(['node'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        decrypted_src, stderr = p.communicate(data)
+        return compat_str(decrypted_src)
+
     def _real_extract(self, url):
         video_id = self._match_id(url)
-
+        
         webpage = self._download_webpage(url, video_id)
 
         title = self._og_search_title(webpage, default=video_id)
-
+        
         formats = []
         for format_ in re.findall(r'({[^}]*\bsrc\s*:\s*[^}]*})', webpage):
-            video = self._parse_json(
-                format_, video_id, transform_source=js_to_json, fatal=False)
+            
+            #Sanitizing before Parsing
+            valid_json = re.sub(r'(type)',r'"\1"',format_)
+            valid_json = re.sub(r'(src)', r'"\1"', valid_json)
+            valid_json = re.sub(r'(d\(.*\))',r'"\1"',valid_json)
+            valid_json = re.sub(r'(height)',r'"\1"',valid_json)
+            valid_json = re.sub(r'(bitrate)',r'"\1"',valid_json)
+            valid_json = re.sub(r'(width)',r'"\1"',valid_json)
+
+            video = self._parse_json( valid_json, video_id, None, False)
+
             if not video:
                 continue
-            src = video.get('src')
+            src = self._decrypt_url(webpage, video.get('src'))
             if not src:
                 continue
+            
             ext = determine_ext(src, default_ext=None)
             if video.get('type') == 'application/dash+xml' or ext == 'mpd':
                 formats.extend(self._extract_mpd_formats(
